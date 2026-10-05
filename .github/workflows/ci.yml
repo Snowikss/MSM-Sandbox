@@ -26,3 +26,39 @@ jobs:
 
       - name: Import application
         run: python -c "from app.main import app; assert app.title == 'MSM Sandbox'"
+
+      - name: Bridge smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m uvicorn app.main:app --host 127.0.0.1 --port 8123 > /tmp/msm-sandbox.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true; cat /tmp/msm-sandbox.log' EXIT
+
+          for i in {1..30}; do
+            if curl -fsS http://127.0.0.1:8123/api/health >/dev/null; then
+              break
+            fi
+            sleep 0.2
+          done
+
+          curl -fsS http://127.0.0.1:8123/api/health | grep -q 'ok'
+          curl -fsS -X POST http://127.0.0.1:8123/auth/api/token | grep -q 'sandbox-local-token'
+          curl -fsS -X POST http://127.0.0.1:8123/pregame_setup.php | grep -q '/msm/socket'
+
+          python - <<'PY'
+          import asyncio
+          import json
+          import websockets
+
+          async def main():
+              async with websockets.connect('ws://127.0.0.1:8123/msm/socket') as ws:
+                  hello = json.loads(await ws.recv())
+                  assert hello['type'] == 'server_hello'
+                  await ws.send(json.dumps({'command': 'playerSync'}))
+                  reply = json.loads(await ws.recv())
+                  assert reply['type'] == 'playerSync'
+                  assert reply['player']['active_island']['name'] == 'Plant Island'
+
+          asyncio.run(main())
+          PY
