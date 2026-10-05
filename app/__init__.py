@@ -1,7 +1,9 @@
 from .compat import router as compat_router
+from .nps_compat import router as nps_router
 from .test_client import router as test_client_router
 
-# Keep the standalone browser test client on the same compatibility router.
-# app.main already mounts compat_router, so /client becomes available without
-# coupling the test UI to the admin dashboard.
+# NPS duplicates a few HTTP paths that the generic compatibility layer also
+# exposes. Put its stricter launcher-shaped responses first while keeping the
+# existing generic endpoints and developer test client available afterwards.
+compat_router.routes = [*nps_router.routes, *compat_router.routes]
 compat_router.include_router(test_client_router)
