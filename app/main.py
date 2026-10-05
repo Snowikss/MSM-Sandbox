@@ -16,7 +16,7 @@ from .models import (
 from .storage import load_state, save_state
 
 
-app = FastAPI(title="MSM Sandbox", version="0.2.0")
+app = FastAPI(title="MSM Sandbox", version="0.3.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -158,7 +158,7 @@ DASHBOARD_HTML = r"""
 
   <section class="card" style="margin-top:12px">
     <h2>Client bridge</h2>
-    <div class="muted">HTTP auth/pregame и WebSocket-диагностика для отдельного тестового клиента.</div>
+    <div class="muted">HTTP auth/pregame + бинарный SFS/WebSocket bridge для отдельного тестового клиента.</div>
     <div class="row" style="margin-top:10px">
       <code>/auth/api/token</code>
       <code>/pregame_setup.php</code>
@@ -260,7 +260,7 @@ async function testBridge() {
   try {
     const info = await request('/api/compat/status');
     const wsScheme = location.protocol === 'https:' ? 'wss' : 'ws';
-    const socket = new WebSocket(`${wsScheme}://${location.host}/msm/socket`);
+    const socket = new WebSocket(`${wsScheme}://${location.host}/msm/socket?diagnostic=1`);
     const timer = setTimeout(() => {
       socket.close();
       status.textContent = 'HTTP bridge работает, WebSocket не ответил вовремя.';
