@@ -49,6 +49,7 @@ jobs:
           curl -fsS http://127.0.0.1:8123/api/compat/nps | grep -q 'nps-custom-server'
           curl -fsS http://127.0.0.1:8123/content/files.json | grep -q '\[\]'
           curl -fsS http://127.0.0.1:8123/content/downloads.xml | grep -q '<Downloads'
+          curl -fsS http://127.0.0.1:8123/msm/socket | grep -q 'apiOK'
 
           python - <<'PY'
           import asyncio
@@ -66,8 +67,8 @@ jobs:
                   assert reply['type'] == 'playerSync'
                   assert reply['player']['active_island']['name'] == 'Plant Island'
 
-          async def binary_test():
-              async with websockets.connect('ws://127.0.0.1:8123/msm/socket') as ws:
+          async def binary_test(path):
+              async with websockets.connect(f'ws://127.0.0.1:8123{path}') as ws:
                   await ws.send(build_client_frame(1, 'USER_LOGIN', {'user_game_id': 'ci-player'}))
                   raw = await asyncio.wait_for(ws.recv(), timeout=2)
                   assert isinstance(raw, bytes)
@@ -84,7 +85,47 @@ jobs:
 
           async def main():
               await diagnostic_test()
-              await binary_test()
+              await binary_test('/msm/socket')
+              await binary_test('/websocket')
+              await binary_test('/BlueBox/BlueBox.do')
+
+          asyncio.run(main())
+          PY
+
+      - name: Multi-port launcher smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m app.run > /tmp/msm-multiport.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true; wait $SERVER_PID 2>/dev/null || true; cat /tmp/msm-multiport.log' EXIT
+
+          for i in {1..40}; do
+            if curl -fsS http://127.0.0.1:8000/api/health >/dev/null \
+              && curl -fsS http://127.0.0.1:5050/api/compat/nps >/dev/null \
+              && curl -fsS http://127.0.0.1:8282/msm/socket >/dev/null; then
+              break
+            fi
+            sleep 0.2
+          done
+
+          curl -fsS http://127.0.0.1:8000/api/health | grep -q 'ok'
+          curl -fsS http://127.0.0.1:5050/api/compat/nps | grep -q 'nps-custom-server'
+          curl -fsS -X POST http://127.0.0.1:5050/pregame_setup.php | grep -q '8282'
+          curl -fsS http://127.0.0.1:8282/msm/socket | grep -q 'apiOK'
+
+          python - <<'PY'
+          import asyncio
+          import websockets
+          from app.sfs_codec import build_client_frame, parse_server_frame
+
+          async def main():
+              async with websockets.connect('ws://127.0.0.1:8282/msm/socket') as ws:
+                  await ws.send(build_client_frame(1, 'USER_LOGIN', {'user_game_id': 'multiport-ci'}))
+                  raw = await asyncio.wait_for(ws.recv(), timeout=2)
+                  frame = parse_server_frame(raw)
+                  assert frame.command == 'USER_LOGIN'
+                  assert frame.payload['success'] is True
 
           asyncio.run(main())
           PY
