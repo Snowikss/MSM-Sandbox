@@ -51,14 +51,30 @@ jobs:
           import json
           import websockets
 
-          async def main():
-              async with websockets.connect('ws://127.0.0.1:8123/msm/socket') as ws:
+          from app.sfs_codec import build_client_frame, parse_server_frame
+
+          async def diagnostic_test():
+              async with websockets.connect('ws://127.0.0.1:8123/msm/socket?diagnostic=1') as ws:
                   hello = json.loads(await ws.recv())
                   assert hello['type'] == 'server_hello'
                   await ws.send(json.dumps({'command': 'playerSync'}))
                   reply = json.loads(await ws.recv())
                   assert reply['type'] == 'playerSync'
                   assert reply['player']['active_island']['name'] == 'Plant Island'
+
+          async def binary_test():
+              async with websockets.connect('ws://127.0.0.1:8123/msm/socket') as ws:
+                  await ws.send(build_client_frame(1, 'USER_LOGIN', {'user_game_id': 'ci-player'}))
+                  raw = await asyncio.wait_for(ws.recv(), timeout=2)
+                  assert isinstance(raw, bytes)
+                  frame = parse_server_frame(raw)
+                  assert frame.command == 'USER_LOGIN'
+                  assert frame.payload['success'] is True
+                  assert frame.payload['user'] == 'ci-player'
+
+          async def main():
+              await diagnostic_test()
+              await binary_test()
 
           asyncio.run(main())
           PY
