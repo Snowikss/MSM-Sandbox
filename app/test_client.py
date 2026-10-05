@@ -28,11 +28,13 @@ CLIENT_HTML = r"""
     code, pre { white-space:pre-wrap; word-break:break-word; }
     .stats { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:12px; }
     .stat { background:#10151c; border-radius:12px; padding:10px; text-align:center; }
-    .island { position:relative; overflow:hidden; min-height:260px; margin-top:12px; border-radius:20px; background:linear-gradient(#172939 0 48%,#193728 48% 100%); border:1px solid #334353; }
-    .ground { position:absolute; width:115%; height:68%; left:-7%; bottom:-30%; border-radius:50%; background:#294a31; border:1px solid #3e6848; }
-    .island-title { position:absolute; left:14px; top:12px; z-index:3; padding:7px 10px; border-radius:10px; background:#10151ccc; }
-    .monster-dot { position:absolute; z-index:4; min-width:64px; padding:7px 9px; text-align:center; border-radius:14px; background:#202936e8; border:1px solid #526078; transform:translate(-50%,-50%); font-size:12px; }
+    .island { position:relative; overflow:hidden; min-height:300px; margin-top:12px; border-radius:20px; background:linear-gradient(#172939 0 48%,#193728 48% 100%); border:1px solid #334353; touch-action:none; }
+    .ground { position:absolute; width:115%; height:68%; left:-7%; bottom:-30%; border-radius:50%; background:#294a31; border:1px solid #3e6848; pointer-events:none; }
+    .island-title { position:absolute; left:14px; top:12px; z-index:3; padding:7px 10px; border-radius:10px; background:#10151ccc; pointer-events:none; }
+    .move-status { position:absolute; right:14px; top:15px; z-index:3; font-size:12px; pointer-events:none; }
+    .monster-dot { position:absolute; z-index:4; min-width:72px; padding:8px 10px; text-align:center; border-radius:14px; background:#202936ee; border:1px solid #526078; transform:translate(-50%,-50%); font-size:12px; cursor:grab; user-select:none; touch-action:none; box-shadow:0 6px 18px #0006; }
     .monster-dot b { display:block; font-size:13px; }
+    .monster-dot.dragging { cursor:grabbing; border-color:#9ab2d4; transform:translate(-50%,-50%) scale(1.05); }
     .monster { padding:9px 0; border-top:1px solid #28313d; }
     @media (max-width:520px) { .stats { grid-template-columns:1fr; } }
   </style>
@@ -40,7 +42,7 @@ CLIENT_HTML = r"""
 <body>
 <main>
   <h1>MSM Sandbox Client</h1>
-  <div class="muted">Телефонный клиент нашего локального сервера. Теперь с бинарным SFS-потоком.</div>
+  <div class="muted">Наш локальный мобильный клиент. Бинарный SFS загружает мир, а позиции монстров сохраняются на сервере.</div>
 
   <section class="card">
     <div class="row">
@@ -55,7 +57,11 @@ CLIENT_HTML = r"""
   </section>
 
   <section class="card" id="world" hidden>
-    <div class="row"><b id="playerName">Sandbox</b><span class="muted" id="protocolBadge"></span></div>
+    <div class="row">
+      <b id="playerName">Sandbox</b>
+      <span class="muted" id="protocolBadge"></span>
+      <span class="muted">Перетаскивай монстров пальцем или мышкой.</span>
+    </div>
     <div class="stats">
       <div class="stat"><div class="muted">Монеты</div><b id="coins">0</b></div>
       <div class="stat"><div class="muted">Алмазы</div><b id="diamonds">0</b></div>
@@ -64,6 +70,7 @@ CLIENT_HTML = r"""
     <div class="island" id="island">
       <div class="ground"></div>
       <div class="island-title" id="islandName">Plant Island</div>
+      <div class="move-status muted" id="moveStatus"></div>
     </div>
   </section>
 
@@ -77,6 +84,7 @@ const steps = [];
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 let requestId = 1n;
+let currentPlayer = null;
 
 function log(text, ok=true) {
   steps.push((ok ? '✓ ' : '✗ ') + text);
@@ -159,7 +167,7 @@ function decodeValue(r,t) {
   if(t===2) return (r.u8()<<24)>>24;
   if(t===3) return r.i16();
   if(t===4) return r.i32();
-  if(t===5) { const v=r.i64(); return Number(v); }
+  if(t===5) return Number(r.i64());
   if(t===6) return r.f32();
   if(t===7) return r.f64();
   if(t===8) return r.utf();
@@ -217,11 +225,83 @@ function binarySession() {
   });
 }
 
+function clamp(v,min,max){ return Math.max(min,Math.min(max,v)); }
+
+async function savePosition(monster, x, y) {
+  const status=document.querySelector('#moveStatus');
+  status.textContent='Сохраняю...';
+  try {
+    const result=await json(`/api/compat/monsters/${encodeURIComponent(monster.id)}/position`,{
+      method:'PATCH',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({x,y})
+    });
+    monster.x=result.monster.x;
+    monster.y=result.monster.y;
+    status.className='move-status ok';
+    status.textContent='Позиция сохранена ✓';
+    setTimeout(()=>{ status.textContent=''; status.className='move-status muted'; },1200);
+  } catch(error) {
+    status.className='move-status bad';
+    status.textContent='Не сохранилось';
+  }
+}
+
+function attachDrag(dot, monster) {
+  const island=document.querySelector('#island');
+  let dragging=false;
+
+  function moveFromEvent(event) {
+    const rect=island.getBoundingClientRect();
+    const x=clamp(((event.clientX-rect.left)/rect.width)*100,5,95);
+    const y=clamp(((event.clientY-rect.top)/rect.height)*100,25,90);
+    dot.style.left=x+'%';
+    dot.style.top=y+'%';
+    monster.x=x;
+    monster.y=y;
+  }
+
+  dot.addEventListener('pointerdown',event=>{
+    dragging=true;
+    dot.classList.add('dragging');
+    dot.setPointerCapture(event.pointerId);
+    moveFromEvent(event);
+  });
+  dot.addEventListener('pointermove',event=>{
+    if(dragging) moveFromEvent(event);
+  });
+  dot.addEventListener('pointerup',async event=>{
+    if(!dragging) return;
+    dragging=false;
+    dot.classList.remove('dragging');
+    moveFromEvent(event);
+    await savePosition(monster,monster.x,monster.y);
+    renderMonsterList(currentPlayer?.monsters || []);
+  });
+  dot.addEventListener('pointercancel',()=>{
+    dragging=false;
+    dot.classList.remove('dragging');
+  });
+}
+
+function renderMonsterList(list) {
+  const root=document.querySelector('#monsters');
+  root.innerHTML='';
+  if(!list.length) root.innerHTML='<span class="muted">Монстров нет.</span>';
+  for(const m of list){
+    const d=document.createElement('div');
+    d.className='monster';
+    d.textContent=`${m.species} · уровень ${m.level} · ${m.island} · ${m.x.toFixed(1)}%, ${m.y.toFixed(1)}%`;
+    root.appendChild(d);
+  }
+}
+
 function renderWorld(player, wirePlayer) {
+  currentPlayer=player;
   document.querySelector('#world').hidden=false;
   document.querySelector('#monsterCard').hidden=false;
   document.querySelector('#playerName').textContent=player.display_name || 'Sandbox';
-  document.querySelector('#protocolBadge').textContent='binary-sfs-v1';
+  document.querySelector('#protocolBadge').textContent='binary-sfs-v2';
   document.querySelector('#coins').textContent=wirePlayer?.coins ?? player.currencies?.coins ?? 0;
   document.querySelector('#diamonds').textContent=wirePlayer?.diamonds ?? player.currencies?.diamonds ?? 0;
   document.querySelector('#food').textContent=wirePlayer?.food ?? player.currencies?.food ?? 0;
@@ -231,16 +311,17 @@ function renderWorld(player, wirePlayer) {
   island.querySelectorAll('.monster-dot').forEach(x=>x.remove());
   const list=player.monsters || [];
   list.forEach((m,i)=>{
-    const dot=document.createElement('div'); dot.className='monster-dot';
-    const x=20 + ((i*31)%65); const y=56 + ((i*17)%24);
-    dot.style.left=x+'%'; dot.style.top=y+'%';
+    if(typeof m.x!=='number') m.x=20+((i*31)%65);
+    if(typeof m.y!=='number') m.y=56+((i*17)%24);
+    const dot=document.createElement('div');
+    dot.className='monster-dot';
+    dot.style.left=m.x+'%';
+    dot.style.top=m.y+'%';
     dot.innerHTML=`<b>${escapeHtml(m.species)}</b>ур. ${m.level}`;
+    attachDrag(dot,m);
     island.appendChild(dot);
   });
-
-  const root=document.querySelector('#monsters'); root.innerHTML='';
-  if(!list.length) root.innerHTML='<span class="muted">Монстров нет.</span>';
-  for(const m of list){ const d=document.createElement('div'); d.className='monster'; d.textContent=`${m.species} · уровень ${m.level} · ${m.island}`; root.appendChild(d); }
+  renderMonsterList(list);
 }
 function escapeHtml(v){ return String(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
@@ -259,13 +340,15 @@ async function runFlow() {
 
     const wirePlayer=await binarySession();
     log('gs_player получен и распарсен из бинарного SFSObject');
+    const wireMonsters=wirePlayer?.islands?.[0]?.monsters || [];
+    log(`Бинарный gs_player содержит монстров: ${wireMonsters.length}`);
 
     const player=await json('/api/compat/player');
     log(`Plant Island загружен: ${player.active_island?.name || '—'}`);
     log(`Монстров загружено: ${(player.monsters||[]).length}`);
     renderWorld(player,wirePlayer);
 
-    summary.className='ok'; summary.textContent='Бинарный клиент подключён ✓';
+    summary.className='ok'; summary.textContent='Интерактивный клиент подключён ✓';
   } catch(error) {
     log(error.message || String(error),false);
     summary.className='bad'; summary.textContent='Подключение остановилось на ошибке.';
