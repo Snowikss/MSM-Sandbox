@@ -47,9 +47,20 @@ echo [4/5] Installing dependencies...
 "%VENV_PYTHON%" -m pip install --disable-pip-version-check -r requirements.txt
 if errorlevel 1 goto :failed
 
+rem Find the IPv4 address Windows would use for a normal LAN route.
 set "LAN_IP="
-for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "$ip = Get-NetIPAddress -AddressFamily IPv4 ^| Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } ^| Sort-Object InterfaceMetric ^| Select-Object -First 1 -ExpandProperty IPAddress; if($ip){$ip}"`) do set "LAN_IP=%%I"
-if not defined LAN_IP set "LAN_IP=YOUR-PC-IP"
+for /f "usebackq delims=" %%I in (`"%VENV_PYTHON%" -c "import socket; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.connect(('192.0.2.1',9)); print(s.getsockname()[0]); s.close()" 2^>nul`) do set "LAN_IP=%%I"
+
+rem Fallback to the active adapter with a default gateway.
+if not defined LAN_IP (
+  for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "$ip=(Get-NetIPConfiguration ^| Where-Object {$_.IPv4DefaultGateway -ne $null -and $_.IPv4Address.IPAddress} ^| Select-Object -First 1).IPv4Address.IPAddress; if($ip){$ip.Trim()}"`) do set "LAN_IP=%%I"
+)
+
+rem Reject blank/space-only values and localhost/APIPA addresses.
+for /f "tokens=*" %%I in ("%LAN_IP%") do set "LAN_IP=%%I"
+if "%LAN_IP%"=="" set "LAN_IP=YOUR-PC-IP"
+if "%LAN_IP:~0,4%"=="127." set "LAN_IP=YOUR-PC-IP"
+if "%LAN_IP:~0,8%"=="169.254." set "LAN_IP=YOUR-PC-IP"
 
 echo [5/5] Starting MSM Sandbox...
 echo.
