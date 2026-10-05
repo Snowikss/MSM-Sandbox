@@ -27,7 +27,7 @@ jobs:
       - name: Import application
         run: python -c "from app.main import app; assert app.title == 'MSM Sandbox'"
 
-      - name: Bridge smoke test
+      - name: Bridge and NPS compatibility smoke test
         shell: bash
         run: |
           set -euo pipefail
@@ -44,7 +44,11 @@ jobs:
 
           curl -fsS http://127.0.0.1:8123/api/health | grep -q 'ok'
           curl -fsS -X POST http://127.0.0.1:8123/auth/api/token | grep -q 'sandbox-local-token'
-          curl -fsS -X POST http://127.0.0.1:8123/pregame_setup.php | grep -q '/msm/socket'
+          curl -fsS -X POST http://127.0.0.1:8123/auth/api/token | grep -q 'websocketPort'
+          curl -fsS -X POST http://127.0.0.1:8123/pregame_setup.php | grep -q '8282'
+          curl -fsS http://127.0.0.1:8123/api/compat/nps | grep -q 'nps-custom-server'
+          curl -fsS http://127.0.0.1:8123/content/files.json | grep -q '\[\]'
+          curl -fsS http://127.0.0.1:8123/content/downloads.xml | grep -q '<Downloads'
 
           python - <<'PY'
           import asyncio
@@ -71,6 +75,12 @@ jobs:
                   assert frame.command == 'USER_LOGIN'
                   assert frame.payload['success'] is True
                   assert frame.payload['user'] == 'ci-player'
+
+                  await ws.send(build_client_frame(2, 'gs_player', {}))
+                  raw = await asyncio.wait_for(ws.recv(), timeout=2)
+                  frame = parse_server_frame(raw)
+                  assert frame.command == 'gs_player'
+                  assert frame.payload['player_object']['display_name'] == 'Test'
 
           async def main():
               await diagnostic_test()
