@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 
+from .compat import router as compat_router
 from .models import (
     CurrencyPatch,
     Monster,
@@ -14,7 +16,15 @@ from .models import (
 from .storage import load_state, save_state
 
 
-app = FastAPI(title="MSM Sandbox", version="0.1.1")
+app = FastAPI(title="MSM Sandbox", version="0.2.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+app.include_router(compat_router)
+
 state: PlayerState = load_state()
 
 
@@ -147,9 +157,21 @@ DASHBOARD_HTML = r"""
   </section>
 
   <section class="card" style="margin-top:12px">
+    <h2>Client bridge</h2>
+    <div class="muted">HTTP auth/pregame и WebSocket-диагностика для отдельного тестового клиента.</div>
+    <div class="row" style="margin-top:10px">
+      <code>/auth/api/token</code>
+      <code>/pregame_setup.php</code>
+      <code>/msm/socket</code>
+      <button onclick="testBridge()">Проверить bridge</button>
+    </div>
+    <div id="bridgeStatus" class="muted" style="margin-top:10px">Bridge ещё не проверен.</div>
+  </section>
+
+  <section class="card" style="margin-top:12px">
     <div class="row">
       <button class="danger" onclick="resetState()">Сбросить тестовый мир</button>
-      <span class="muted">API: <code>/docs</code></span>
+      <span class="muted">API: <code>/docs</code> · Логи клиента: <code>/api/compat/logs</code></span>
     </div>
   </section>
 </main>
@@ -230,6 +252,31 @@ async function resetState() {
   if (!confirm('Сбросить тестовый мир?')) return;
   current = await request('/api/reset', {method:'POST'});
   await loadState();
+}
+
+async function testBridge() {
+  const status = document.querySelector('#bridgeStatus');
+  status.textContent = 'Проверяю HTTP и WebSocket...';
+  try {
+    const info = await request('/api/compat/status');
+    const wsScheme = location.protocol === 'https:' ? 'wss' : 'ws';
+    const socket = new WebSocket(`${wsScheme}://${location.host}/msm/socket`);
+    const timer = setTimeout(() => {
+      socket.close();
+      status.textContent = 'HTTP bridge работает, WebSocket не ответил вовремя.';
+    }, 3000);
+    socket.onmessage = event => {
+      clearTimeout(timer);
+      status.textContent = `Bridge работает ✓ · ${info.protocol} · ${event.data}`;
+      socket.close();
+    };
+    socket.onerror = () => {
+      clearTimeout(timer);
+      status.textContent = 'HTTP bridge работает, но WebSocket завершился с ошибкой.';
+    };
+  } catch (error) {
+    status.textContent = 'Ошибка bridge: ' + error.message;
+  }
 }
 
 loadState().catch(error => setStatus('Ошибка: ' + error.message));
