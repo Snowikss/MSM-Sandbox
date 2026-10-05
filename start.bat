@@ -66,17 +66,22 @@ if "!LAN_IP:~0,8!"=="169.254." set "LAN_IP=YOUR-PC-IP"
 
 echo [5/5] Starting MSM Sandbox...
 echo.
-echo PC panel:     http://127.0.0.1:8000/
-echo Phone/LAN:   http://!LAN_IP!:8000/
-echo API:          http://127.0.0.1:8000/docs
-echo Client logs:  http://127.0.0.1:8000/api/compat/logs
-echo WebSocket:    ws://!LAN_IP!:8000/msm/socket
+echo Dashboard PC:     http://127.0.0.1:8000/
+echo Dashboard phone:  http://!LAN_IP!:8000/
+echo Developer client: http://!LAN_IP!:8000/client
+echo.
+echo NPS Custom host:  !LAN_IP!
+echo NPS HTTP/Auth:    http://!LAN_IP!:5050/
+echo NPS WebSocket:    ws://!LAN_IP!:8282/msm/socket
+echo NPS status:       http://!LAN_IP!:5050/api/compat/nps
+echo.
+echo Client logs:      http://127.0.0.1:8000/api/compat/logs
+echo API docs:         http://127.0.0.1:8000/docs
 echo.
 if "!LAN_IP!"=="YOUR-PC-IP" (
   echo WARNING: Could not auto-detect the LAN IPv4 address.
   echo Run: ipconfig
   echo Then use the IPv4 Address from your active Wi-Fi/Ethernet adapter.
-  echo Example: http://192.168.1.25:8000/
   echo.
   echo IPv4 candidates found by Windows:
   ipconfig | findstr /i "IPv4"
@@ -84,12 +89,13 @@ if "!LAN_IP!"=="YOUR-PC-IP" (
 )
 echo Keep this window open while using the sandbox.
 echo If Windows Firewall asks about Python, allow Private networks.
-echo Press Ctrl+C to stop the server.
+echo Ports used: 8000 ^(dashboard^), 5050 ^(NPS auth/content^), 8282 ^(NPS WebSocket^).
+echo Press Ctrl+C to stop all three listeners.
 echo.
 
 start "MSM Sandbox browser waiter" /min powershell -NoProfile -ExecutionPolicy Bypass -Command "$url='http://127.0.0.1:8000/api/health'; for($i=0;$i -lt 120;$i++){try{$r=Invoke-WebRequest -UseBasicParsing -Uri $url -TimeoutSec 1;if($r.StatusCode -eq 200){Start-Process 'http://127.0.0.1:8000/';exit}}catch{};Start-Sleep -Milliseconds 500}"
 
-"%VENV_PYTHON%" -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+"%VENV_PYTHON%" -m app.run
 set "SERVER_EXIT=%ERRORLEVEL%"
 
 echo.
