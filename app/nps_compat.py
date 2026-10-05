@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import time
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -336,6 +335,13 @@ async def waf(request: Request) -> JSONResponse:
     )
 
 
+async def bluebox_probe(request: Request) -> Response:
+    return Response(
+        '<msg t="sys"><body action="apiOK" r="0"><ver v="2.13.0"/></body></msg>\x00',
+        media_type="text/xml",
+    )
+
+
 @router.get("/api/compat/nps")
 def nps_status(request: Request) -> dict[str, Any]:
     host = _host(request)
@@ -394,3 +400,6 @@ for path in ("/pregame_setup.php", "/pregame_setup", "/auth/pregame_setup.php"):
 
 for path in ("/waf", "/waf/", "/challenge", "/challenge/", "/token", "/token/"):
     router.add_api_route(path, waf, methods=["GET", "POST", "PUT"])
+
+for path in ("/BlueBox/BlueBox.do", "/msm/socket"):
+    router.add_api_route(path, bluebox_probe, methods=["GET", "POST"])
