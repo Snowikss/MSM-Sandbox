@@ -47,19 +47,26 @@ echo [4/5] Installing dependencies...
 "%VENV_PYTHON%" -m pip install --disable-pip-version-check -r requirements.txt
 if errorlevel 1 goto :failed
 
+set "LAN_IP="
+for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "$ip = Get-NetIPAddress -AddressFamily IPv4 ^| Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } ^| Sort-Object InterfaceMetric ^| Select-Object -First 1 -ExpandProperty IPAddress; if($ip){$ip}"`) do set "LAN_IP=%%I"
+if not defined LAN_IP set "LAN_IP=YOUR-PC-IP"
+
 echo [5/5] Starting MSM Sandbox...
 echo.
-echo Panel:  http://127.0.0.1:8000/
-echo API:    http://127.0.0.1:8000/docs
-echo Health: http://127.0.0.1:8000/api/health
+echo PC panel:     http://127.0.0.1:8000/
+echo Phone/LAN:   http://%LAN_IP%:8000/
+echo API:          http://127.0.0.1:8000/docs
+echo Client logs:  http://127.0.0.1:8000/api/compat/logs
+echo WebSocket:    ws://%LAN_IP%:8000/msm/socket
 echo.
 echo Keep this window open while using the sandbox.
+echo If Windows Firewall asks about Python, allow Private networks.
 echo Press Ctrl+C to stop the server.
 echo.
 
 start "MSM Sandbox browser waiter" /min powershell -NoProfile -ExecutionPolicy Bypass -Command "$url='http://127.0.0.1:8000/api/health'; for($i=0;$i -lt 120;$i++){try{$r=Invoke-WebRequest -UseBasicParsing -Uri $url -TimeoutSec 1;if($r.StatusCode -eq 200){Start-Process 'http://127.0.0.1:8000/';exit}}catch{};Start-Sleep -Milliseconds 500}"
 
-"%VENV_PYTHON%" -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+"%VENV_PYTHON%" -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 set "SERVER_EXIT=%ERRORLEVEL%"
 
 echo.
