@@ -14,6 +14,8 @@ class Monster(BaseModel):
     species: str
     level: int = Field(default=1, ge=1, le=20)
     island: str = "Plant Island"
+    x: float = Field(default=50.0, ge=5.0, le=95.0)
+    y: float = Field(default=70.0, ge=25.0, le=90.0)
 
 
 class PlayerState(BaseModel):
@@ -25,8 +27,8 @@ class PlayerState(BaseModel):
     active_island: str = "Plant Island"
     monsters: list[Monster] = Field(
         default_factory=lambda: [
-            Monster(species="Mammott", level=20),
-            Monster(species="Noggin", level=20),
+            Monster(species="Mammott", level=20, x=34.0, y=68.0),
+            Monster(species="Noggin", level=20, x=66.0, y=72.0),
         ]
     )
 
@@ -41,6 +43,8 @@ class MonsterCreate(BaseModel):
     species: str = Field(min_length=1, max_length=80)
     level: int = Field(default=1, ge=1, le=20)
     island: str = Field(default="Plant Island", min_length=1, max_length=80)
+    x: float = Field(default=50.0, ge=5.0, le=95.0)
+    y: float = Field(default=70.0, ge=25.0, le=90.0)
 
 
 class MonsterLevelPatch(BaseModel):
