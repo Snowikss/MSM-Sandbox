@@ -1,6 +1,11 @@
-from .compat import LOADING_STUB_COMMANDS, router as compat_router
+from .compat import LOADING_STUB_COMMANDS, msm_socket, router as compat_router
 from .nps_compat import router as nps_router
 from .test_client import router as test_client_router
+
+# Match the websocket aliases exposed by the NPS bridge. /msm/socket already
+# exists in compat_router; these two aliases cover clients that use a fallback.
+nps_router.add_api_websocket_route("/websocket", msm_socket)
+nps_router.add_api_websocket_route("/BlueBox/BlueBox.do", msm_socket)
 
 # NPS duplicates a few HTTP paths that the generic compatibility layer also
 # exposes. Put its stricter launcher-shaped responses first while keeping the
