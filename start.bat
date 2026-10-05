@@ -1,13 +1,11 @@
 @echo off
-setlocal
+setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 title MSM Sandbox
 
 echo [1/5] Checking Python...
 set "PYTHON_CMD="
 
-rem The new Windows Python launcher can exist even when no runtime is installed.
-rem Do not trust `py -3.11 --version` alone; require Python code to actually run.
 py -3.11 -c "print('MSM_PY_OK')" 2>nul | findstr /x "MSM_PY_OK" >nul
 if not errorlevel 1 set "PYTHON_CMD=py -3.11"
 
@@ -23,7 +21,6 @@ if not defined PYTHON_CMD (
   )
 )
 
-rem Fallback for a normal python.exe already present on PATH.
 if not defined PYTHON_CMD (
   python -c "import sys; assert sys.version_info >= (3, 11); print('MSM_PY_OK')" 2>nul | findstr /x "MSM_PY_OK" >nul
   if not errorlevel 1 set "PYTHON_CMD=python"
@@ -47,29 +44,44 @@ echo [4/5] Installing dependencies...
 "%VENV_PYTHON%" -m pip install --disable-pip-version-check -r requirements.txt
 if errorlevel 1 goto :failed
 
-rem Find the IPv4 address Windows would use for a normal LAN route.
 set "LAN_IP="
-for /f "usebackq delims=" %%I in (`"%VENV_PYTHON%" -c "import socket; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.connect(('192.0.2.1',9)); print(s.getsockname()[0]); s.close()" 2^>nul`) do set "LAN_IP=%%I"
 
-rem Fallback to the active adapter with a default gateway.
+rem Method 1: ask Windows routing which IPv4 address would be used off-host.
+for /f "usebackq delims=" %%I in (`"%VENV_PYTHON%" -c "import socket; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.connect(('1.1.1.1',80)); print(s.getsockname()[0]); s.close()" 2^>nul`) do set "LAN_IP=%%I"
+
+rem Method 2: inspect IPv4 addresses attached to this hostname and prefer private LAN ranges.
 if not defined LAN_IP (
-  for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "$ip=(Get-NetIPConfiguration ^| Where-Object {$_.IPv4DefaultGateway -ne $null -and $_.IPv4Address.IPAddress} ^| Select-Object -First 1).IPv4Address.IPAddress; if($ip){$ip.Trim()}"`) do set "LAN_IP=%%I"
+  for /f "usebackq delims=" %%I in (`"%VENV_PYTHON%" -c "import socket,ipaddress; ips=[]; [ips.append(a[4][0]) for a in socket.getaddrinfo(socket.gethostname(),None,socket.AF_INET) if a[4][0] not in ips]; print(next((x for x in ips if ipaddress.ip_address(x).is_private and not x.startswith('127.')),''))" 2^>nul`) do set "LAN_IP=%%I"
 )
 
-rem Reject blank/space-only values and localhost/APIPA addresses.
-for /f "tokens=*" %%I in ("%LAN_IP%") do set "LAN_IP=%%I"
-if "%LAN_IP%"=="" set "LAN_IP=YOUR-PC-IP"
-if "%LAN_IP:~0,4%"=="127." set "LAN_IP=YOUR-PC-IP"
-if "%LAN_IP:~0,8%"=="169.254." set "LAN_IP=YOUR-PC-IP"
+rem Method 3: active adapter with a default gateway.
+if not defined LAN_IP (
+  for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "$cfg=Get-NetIPConfiguration ^| Where-Object { $_.IPv4DefaultGateway -and $_.IPv4Address } ^| Select-Object -First 1; if($cfg){$cfg.IPv4Address.IPAddress}"`) do set "LAN_IP=%%I"
+)
+
+for /f "tokens=*" %%I in ("!LAN_IP!") do set "LAN_IP=%%I"
+if "!LAN_IP!"=="" set "LAN_IP=YOUR-PC-IP"
+if "!LAN_IP:~0,4!"=="127." set "LAN_IP=YOUR-PC-IP"
+if "!LAN_IP:~0,8!"=="169.254." set "LAN_IP=YOUR-PC-IP"
 
 echo [5/5] Starting MSM Sandbox...
 echo.
 echo PC panel:     http://127.0.0.1:8000/
-echo Phone/LAN:   http://%LAN_IP%:8000/
+echo Phone/LAN:   http://!LAN_IP!:8000/
 echo API:          http://127.0.0.1:8000/docs
 echo Client logs:  http://127.0.0.1:8000/api/compat/logs
-echo WebSocket:    ws://%LAN_IP%:8000/msm/socket
+echo WebSocket:    ws://!LAN_IP!:8000/msm/socket
 echo.
+if "!LAN_IP!"=="YOUR-PC-IP" (
+  echo WARNING: Could not auto-detect the LAN IPv4 address.
+  echo Run: ipconfig
+  echo Then use the IPv4 Address from your active Wi-Fi/Ethernet adapter.
+  echo Example: http://192.168.1.25:8000/
+  echo.
+  echo IPv4 candidates found by Windows:
+  ipconfig | findstr /i "IPv4"
+  echo.
+)
 echo Keep this window open while using the sandbox.
 echo If Windows Firewall asks about Python, allow Private networks.
 echo Press Ctrl+C to stop the server.
