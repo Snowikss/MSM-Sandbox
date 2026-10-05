@@ -7,13 +7,50 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
+from .sfs_codec import SFSLong, build_server_frame, parse_client_frame
 from .storage import load_state
 
 
 router = APIRouter(tags=["MSM compatibility"])
 TRACE: deque[dict[str, Any]] = deque(maxlen=200)
+
+
+LOADING_STUB_COMMANDS = {
+    "db_monster",
+    "db_gene",
+    "db_bakery_foods",
+    "db_structure",
+    "db_island_v2",
+    "db_scratch_offs",
+    "db_attuner_gene",
+    "db_store_v2",
+    "db_flexeggdefs",
+    "db_battle",
+    "db_battle_levels",
+    "db_battle_monster_training",
+    "db_battle_monster_actions",
+    "db_battle_monster_stats",
+    "db_battle_music",
+    "db_costumes",
+    "gs_timed_events",
+    "gs_rare_monster_data",
+    "gs_epic_monster_data",
+    "gs_flip_boards",
+    "gs_flip_levels",
+    "gs_cant_breed",
+}
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, bytes):
+        return {"bytes_hex": value.hex()}
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
 
 
 def _trace(kind: str, name: str, **details: Any) -> None:
@@ -22,7 +59,7 @@ def _trace(kind: str, name: str, **details: Any) -> None:
             "time": datetime.now(timezone.utc).isoformat(),
             "kind": kind,
             "name": name,
-            **details,
+            **_json_safe(details),
         }
     )
 
@@ -68,6 +105,29 @@ def _player_payload() -> dict[str, Any]:
                 "island": monster.island,
             }
             for monster in state.monsters
+        ],
+    }
+
+
+def _wire_player_payload() -> dict[str, Any]:
+    state = load_state()
+    return {
+        "user_id": SFSLong(1),
+        "user_game_id": "sandbox-player-1",
+        "display_name": state.name,
+        "level": 1,
+        "coins": SFSLong(state.coins),
+        "diamonds": state.diamonds,
+        "food": SFSLong(state.food),
+        "active_island": SFSLong(1),
+        "islands": [
+            {
+                "user_island_id": SFSLong(1),
+                "island_id": 1,
+                "name": state.active_island,
+                "monsters": [],
+                "structures": [],
+            }
         ],
     }
 
@@ -119,6 +179,7 @@ async def auth_login(request: Request) -> JSONResponse:
         {
             "ok": True,
             "token": "sandbox-local-token",
+            "access_token": "sandbox-local-token",
             "user_game_id": "sandbox-player-1",
             "account_id": "sandbox-account-1",
             "username": "Sandbox",
@@ -130,13 +191,19 @@ async def game_config(request: Request) -> JSONResponse:
     urls = _base_urls(request)
     _trace("http", "game_config", method=request.method, path=request.url.path, host=urls["host"])
     port = int(urls["port"])
+    server_ip_descriptor = f"http|websocket|{urls['host']}|{port}"
     server = {
         "host": urls["host"],
         "server_ip": urls["host"],
+        "serverIp": server_ip_descriptor,
         "port": port,
+        "serverPort": port,
         "websocket": True,
+        "websocketPort": port,
         "websocket_url": urls["ws"],
+        "websocketUrl": urls["ws"],
         "websocket_path": "/msm/socket",
+        "websocketPath": "/msm/socket",
         "zone": "MySingingMonsters",
         "secure": False,
     }
@@ -146,6 +213,7 @@ async def game_config(request: Request) -> JSONResponse:
             "server": server,
             "servers": [server],
             "content_url": f"{urls['http']}/content/",
+            "contentUrl": f"{urls['http']}/content/",
             "client_version": "sandbox",
         }
     )
@@ -156,16 +224,41 @@ async def pregame_setup(request: Request) -> JSONResponse:
     data = await _request_data(request)
     _trace("http", "pregame_setup", method=request.method, path=request.url.path, keys=sorted(data.keys()))
     port = int(urls["port"])
+    descriptor = f"http|websocket|{urls['host']}|{port}"
     return JSONResponse(
         {
             "ok": True,
             "server_ip": urls["host"],
+            "serverIp": descriptor,
             "server_port": port,
+            "serverPort": port,
             "server": f"{urls['host']}:{port}",
             "websocket_url": urls["ws"],
+            "websocketUrl": urls["ws"],
             "websocket_path": "/msm/socket",
+            "websocketPath": "/msm/socket",
             "content_url": f"{urls['http']}/content/",
+            "contentUrl": f"{urls['http']}/content/",
             "zone": "MySingingMonsters",
+        }
+    )
+
+
+async def legacy_auth(request: Request) -> JSONResponse:
+    urls = _base_urls(request)
+    data = await _request_data(request)
+    _trace("http", "legacy_auth", method=request.method, path=request.url.path, keys=sorted(data.keys()))
+    return JSONResponse(
+        {
+            "ok": True,
+            "bbbId": "1",
+            "sessId": "sandbox-session",
+            "username": "Sandbox",
+            "password": "sandbox",
+            "serverIp": urls["host"],
+            "contentUrl": f"{urls['http']}/content/",
+            "friends": [],
+            "sync": [],
         }
     )
 
@@ -174,10 +267,11 @@ async def pregame_setup(request: Request) -> JSONResponse:
 def compat_status() -> dict[str, Any]:
     return {
         "status": "ready",
-        "protocol": "diagnostic-v1",
+        "protocol": "binary-sfs-v1",
         "auth": True,
         "pregame": True,
         "websocket": "/msm/socket",
+        "binary_decode": True,
         "captured_events": len(TRACE),
     }
 
@@ -199,21 +293,31 @@ def compat_player() -> dict[str, Any]:
     return _player_payload()
 
 
+@router.api_route("/BlueBox/BlueBox.do", methods=["GET", "POST"])
+async def bluebox_probe(request: Request) -> Response:
+    _trace("http", "bluebox_probe", method=request.method, path=request.url.path)
+    return Response(
+        '<msg t="sys"><body action="apiOK" r="0"><ver v="2.13.0"/></body></msg>\x00',
+        media_type="text/xml",
+    )
+
+
 @router.websocket("/msm/socket")
 async def msm_socket(websocket: WebSocket) -> None:
     await websocket.accept()
     client = websocket.client.host if websocket.client else "unknown"
-    _trace("websocket", "connect", client=client, path=websocket.url.path)
+    diagnostic = websocket.query_params.get("diagnostic") == "1"
+    _trace("websocket", "connect", client=client, path=websocket.url.path, diagnostic=diagnostic)
 
-    # This hello is for our diagnostic client. A real MSM binary client can ignore it.
     try:
-        await websocket.send_json(
-            {
-                "type": "server_hello",
-                "server": "MSM Sandbox",
-                "protocol": "diagnostic-v1",
-            }
-        )
+        if diagnostic:
+            await websocket.send_json(
+                {
+                    "type": "server_hello",
+                    "server": "MSM Sandbox",
+                    "protocol": "binary-sfs-v1",
+                }
+            )
 
         while True:
             message = await websocket.receive()
@@ -253,15 +357,63 @@ async def msm_socket(websocket: WebSocket) -> None:
                     )
 
             elif binary is not None:
-                # Do not invent a binary reply. Capture the frame so we can implement
-                # the real wire format once we know exactly what the test client sent.
+                try:
+                    frame = parse_client_frame(binary)
+                except Exception as exc:
+                    _trace(
+                        "websocket",
+                        "binary_parse_error",
+                        client=client,
+                        size=len(binary),
+                        hex=binary[:96].hex(),
+                        error=str(exc),
+                    )
+                    continue
+
                 _trace(
                     "websocket",
-                    "binary",
+                    "binary_command",
                     client=client,
                     size=len(binary),
-                    hex=binary[:96].hex(),
+                    request_id=frame.request_id,
+                    command=frame.command,
+                    params=frame.params,
                 )
+
+                if frame.command == "alive":
+                    continue
+
+                if frame.command == "USER_LOGIN":
+                    payload = {
+                        "data": {},
+                        "success": True,
+                        "user": str(
+                            frame.params.get("user_game_id")
+                            or frame.params.get("username")
+                            or "sandbox-player-1"
+                        ),
+                    }
+                    await websocket.send_bytes(build_server_frame("USER_LOGIN", payload))
+                    _trace("websocket", "binary_response", command="USER_LOGIN", payload=payload)
+                    continue
+
+                if frame.command == "client_keep_alive":
+                    await websocket.send_bytes(build_server_frame("client_keep_alive", {}))
+                    _trace("websocket", "binary_response", command="client_keep_alive", payload={})
+                    continue
+
+                if frame.command == "gs_player":
+                    payload = {"player_object": _wire_player_payload()}
+                    await websocket.send_bytes(build_server_frame("gs_player", payload))
+                    _trace("websocket", "binary_response", command="gs_player", payload=payload)
+                    continue
+
+                if frame.command in LOADING_STUB_COMMANDS:
+                    await websocket.send_bytes(build_server_frame(frame.command, {}))
+                    _trace("websocket", "binary_stub_response", command=frame.command, payload={})
+                    continue
+
+                _trace("websocket", "binary_unhandled", command=frame.command)
     except WebSocketDisconnect:
         pass
     finally:
@@ -288,3 +440,6 @@ for path in (
     "/auth/pregame_setup.php",
 ):
     router.add_api_route(path, pregame_setup, methods=["GET", "POST"])
+
+for path in ("/auth.php", "/auth.php/"):
+    router.add_api_route(path, legacy_auth, methods=["GET", "POST"])
