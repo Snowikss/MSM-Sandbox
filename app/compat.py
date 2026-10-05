@@ -6,11 +6,11 @@ from collections import deque
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, Response
 
 from .sfs_codec import SFSLong, build_server_frame, parse_client_frame
-from .storage import load_state
+from .storage import load_state, save_state
 
 
 router = APIRouter(tags=["MSM compatibility"])
@@ -80,6 +80,38 @@ def _base_urls(request: Request) -> dict[str, str]:
     }
 
 
+def _clamp_position(x: float, y: float) -> tuple[float, float]:
+    return max(5.0, min(95.0, x)), max(25.0, min(90.0, y))
+
+
+def _monster_json(monster: Any, wire_id: int) -> dict[str, Any]:
+    return {
+        "id": monster.id,
+        "user_monster_id": wire_id,
+        "species": monster.species,
+        "level": monster.level,
+        "island": monster.island,
+        "x": monster.x,
+        "y": monster.y,
+    }
+
+
+def _wire_monster(monster: Any, wire_id: int) -> dict[str, Any]:
+    return {
+        "user_monster_id": SFSLong(wire_id),
+        "monster_id": wire_id,
+        "name": monster.species,
+        "monster_name": monster.species,
+        "species": monster.species,
+        "level": monster.level,
+        "x": float(monster.x),
+        "y": float(monster.y),
+        "pos_x": float(monster.x),
+        "pos_y": float(monster.y),
+        "user_island_id": SFSLong(1),
+    }
+
+
 def _player_payload() -> dict[str, Any]:
     state = load_state()
     return {
@@ -98,19 +130,18 @@ def _player_payload() -> dict[str, Any]:
         },
         "timer_mode": state.timer_mode,
         "monsters": [
-            {
-                "id": monster.id,
-                "species": monster.species,
-                "level": monster.level,
-                "island": monster.island,
-            }
-            for monster in state.monsters
+            _monster_json(monster, index)
+            for index, monster in enumerate(state.monsters, start=1)
         ],
     }
 
 
 def _wire_player_payload() -> dict[str, Any]:
     state = load_state()
+    wire_monsters = [
+        _wire_monster(monster, index)
+        for index, monster in enumerate(state.monsters, start=1)
+    ]
     return {
         "user_id": SFSLong(1),
         "user_game_id": "sandbox-player-1",
@@ -125,10 +156,53 @@ def _wire_player_payload() -> dict[str, Any]:
                 "user_island_id": SFSLong(1),
                 "island_id": 1,
                 "name": state.active_island,
-                "monsters": [],
+                "monsters": wire_monsters,
                 "structures": [],
             }
         ],
+    }
+
+
+def _move_wire_monster(params: dict[str, Any]) -> dict[str, Any]:
+    state = load_state()
+    raw_id = params.get("user_monster_id") or params.get("monster_id") or params.get("id")
+    if raw_id is None:
+        return {"success": False, "message": "user_monster_id is required"}
+
+    target_index: int | None = None
+    try:
+        numeric_id = int(raw_id)
+        if 1 <= numeric_id <= len(state.monsters):
+            target_index = numeric_id - 1
+    except (TypeError, ValueError):
+        for index, monster in enumerate(state.monsters):
+            if monster.id == str(raw_id):
+                target_index = index
+                numeric_id = index + 1
+                break
+
+    if target_index is None:
+        return {"success": False, "message": "Monster not found"}
+
+    monster = state.monsters[target_index]
+    try:
+        x = float(params.get("x", params.get("pos_x", monster.x)))
+        y = float(params.get("y", params.get("pos_y", monster.y)))
+    except (TypeError, ValueError):
+        return {"success": False, "message": "Invalid position"}
+
+    x, y = _clamp_position(x, y)
+    monster.x = x
+    monster.y = y
+    save_state(state)
+    wire_id = target_index + 1
+    return {
+        "success": True,
+        "user_monster_id": SFSLong(wire_id),
+        "x": x,
+        "y": y,
+        "pos_x": x,
+        "pos_y": y,
     }
 
 
@@ -267,11 +341,12 @@ async def legacy_auth(request: Request) -> JSONResponse:
 def compat_status() -> dict[str, Any]:
     return {
         "status": "ready",
-        "protocol": "binary-sfs-v1",
+        "protocol": "binary-sfs-v2",
         "auth": True,
         "pregame": True,
         "websocket": "/msm/socket",
         "binary_decode": True,
+        "monster_positions": True,
         "captured_events": len(TRACE),
     }
 
@@ -291,6 +366,28 @@ def clear_compat_logs() -> dict[str, Any]:
 @router.get("/api/compat/player")
 def compat_player() -> dict[str, Any]:
     return _player_payload()
+
+
+@router.patch("/api/compat/monsters/{monster_id}/position")
+async def compat_move_monster(monster_id: str, request: Request) -> dict[str, Any]:
+    data = await _request_data(request)
+    try:
+        x = float(data["x"])
+        y = float(data["y"])
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="x and y are required")
+
+    state = load_state()
+    for index, monster in enumerate(state.monsters, start=1):
+        if monster.id == monster_id:
+            x, y = _clamp_position(x, y)
+            monster.x = x
+            monster.y = y
+            save_state(state)
+            payload = _monster_json(monster, index)
+            _trace("http", "move_monster", monster_id=monster_id, x=x, y=y)
+            return {"ok": True, "monster": payload}
+    raise HTTPException(status_code=404, detail="Monster not found")
 
 
 @router.api_route("/BlueBox/BlueBox.do", methods=["GET", "POST"])
@@ -315,7 +412,7 @@ async def msm_socket(websocket: WebSocket) -> None:
                 {
                     "type": "server_hello",
                     "server": "MSM Sandbox",
-                    "protocol": "binary-sfs-v1",
+                    "protocol": "binary-sfs-v2",
                 }
             )
 
@@ -406,6 +503,12 @@ async def msm_socket(websocket: WebSocket) -> None:
                     payload = {"player_object": _wire_player_payload()}
                     await websocket.send_bytes(build_server_frame("gs_player", payload))
                     _trace("websocket", "binary_response", command="gs_player", payload=payload)
+                    continue
+
+                if frame.command in {"gs_move_monster", "move_monster", "gs_update_monster_position"}:
+                    payload = _move_wire_monster(frame.params)
+                    await websocket.send_bytes(build_server_frame(frame.command, payload))
+                    _trace("websocket", "binary_response", command=frame.command, payload=payload)
                     continue
 
                 if frame.command in LOADING_STUB_COMMANDS:
